@@ -27,6 +27,7 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           untrusted-userspace: false
+          args: --advertise-exit-node
           version: latest
 
       - name: Configure Git SSH Key
