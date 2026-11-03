@@ -59,6 +59,9 @@ jobs:
             --hostname 0.0.0.0 --port "${OPENCODE_PORT}" \
             >/tmp/opencode.log 2>&1 &
 
+          sudo tailscale serve --bg "${OPENCODE_PORT}"
+          sudo tailscale serve --bg "${STOP_PORT}"
+
           python3 - <<'PY' >/tmp/stopserver.log 2>&1 &
           import http.server, os
 
