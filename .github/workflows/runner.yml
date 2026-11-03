@@ -94,35 +94,53 @@ jobs:
 
           ok=""
           for i in $(seq 1 60); do
-            if curl -fs "http://127.0.0.1:${OPENCODE_PORT}/global/health" >/tmp/health.json; then ok=1; break; fi
+            if curl -fs -u "opencode:${SSH_PASSWORD}" "http://127.0.0.1:${OPENCODE_PORT}/global/health" >/tmp/health.json 2>/dev/null; then 
+              ok=1
+              break
+            fi
             sleep 1
           done
-          [ -n "$ok" ] || { echo "::error::opencode did not become healthy"; cat /tmp/opencode.log; exit 1; }
+
+          if [ -z "$ok" ]; then 
+            echo "::error::opencode did not become healthy"
+            cat /tmp/opencode.log
+            exit 1 
+          fi
 
           TS_IP=$(tailscale ip -4)
           {
-            echo "### ready: ssh to the runner"
+            echo "### ✅ ready: ssh to the runner"
             echo ""
-            echo "\`\`\`"
-            echo "ssh -p ${SSH_PORT} runner@${TS_IP}      # password = SSH_PASSWORD secret"
+            echo "\`\`\`bash"
+            echo "ssh -p ${SSH_PORT} runner@${TS_IP}"
             echo "\`\`\`"
             echo ""
-            echo "- opencode server: \`http://${TS_IP}:${OPENCODE_PORT}\` (basic auth: opencode / SSH_PASSWORD)"
-            echo "- stop the job: \`curl -X POST http://${TS_IP}:${STOP_PORT}/stop -H 'Authorization: Bearer <SSH_PASSWORD>'\`"
-            echo "- health: $(cat /tmp/health.json)"
+            echo "- **Password**: \`${SSH_PASSWORD}\`"
+            echo "- **OpenCode UI**: \`http://${TS_IP}:${OPENCODE_PORT}\` (basic auth: opencode / password)"
+            echo "- **Stop job**: \`curl -X POST http://${TS_IP}:${STOP_PORT}/stop -H 'Authorization: Bearer ${STOP_TOKEN}'\`"
+            echo "- **Health**: \`$(cat /tmp/health.json)\`"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-          echo "waiting for stop request (max ~340 min) ..."
+          echo "⏳ waiting for stop request (max ~340 min) ..."
           for i in $(seq 1 2040); do
-            if [ -f "$STOP_FLAG" ]; then echo "stop requested; tearing down"; break; fi
+            if [ -f "$STOP_FLAG" ]; then 
+              echo "🛑 stop requested; tearing down"
+              break 
+            fi
             sleep 10
-            if [ $((i % 60)) -eq 0 ]; then echo "alive: $((i/6)) min"; fi
+            if [ $((i % 60)) -eq 0 ]; then 
+              echo "💓 alive: $((i/6)) min"
+            fi
           done
 
           sudo tailscale logout || true
           pkill -f "opencode serve" || true
+          sudo pkill sshd || true
           exit 0
 
       - name: Final cleanup
         if: always()
-        run: sudo tailscale logout || true
+        run: |
+          sudo tailscale logout || true
+          sudo pkill -f "opencode serve" || true
+          sudo pkill
