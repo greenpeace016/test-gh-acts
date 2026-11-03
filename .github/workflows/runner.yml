@@ -23,13 +23,14 @@ jobs:
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          untrusted-userspace: false
 
       - name: Configure sshd
         env:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           sudo mkdir -p /etc/ssh/sshd_config.d /run/sshd
-          printf 'PermitRootLogin no\nPasswordAuthentication yes\n' | \
+          printf 'PermitRootLogin no\nPasswordAuthentication yes\nStrictModes no\n' | \
             sudo tee /etc/ssh/sshd_config.d/99-runner.conf >/dev/null
           echo "runner:${SSH_PASSWORD}" | sudo chpasswd
           sudo ssh-keygen -A
