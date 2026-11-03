@@ -7,11 +7,6 @@ concurrency:
   group: remote-dev-runner
   cancel-in-progress: true
 
-env:
-  OPENCODE_PORT: 4096
-  STOP_PORT: 8899
-  SSH_PORT: 22
-
 jobs:
   serve:
     runs-on: ubuntu-latest
