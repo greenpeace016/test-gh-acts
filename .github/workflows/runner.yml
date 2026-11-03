@@ -107,8 +107,7 @@ jobs:
                   self.wfile.write(b"shutting down\n")
                   open("/tmp/stop-now", "w").write("1")
                   os._exit(0)
-          
-          
+
               def do_GET(self):
                   self.send_response(404); self.end_headers()
 
@@ -127,10 +126,10 @@ jobs:
             sleep 1
           done
 
-          if [ -z "$ok" ]; then 
+          if [ -z "$ok" ]; then
             echo "::error::opencode did not become healthy"
             cat /tmp/opencode.log
-            exit 1 
+            exit 1
           fi
 
           TS_IP=$(tailscale ip -4)
@@ -150,12 +149,12 @@ jobs:
 
           echo "⏳ waiting for stop request (max ~340 min) ..."
           for i in $(seq 1 2040); do
-            if [ -f "$STOP_FLAG" ]; then 
+            if [ -f "$STOP_FLAG" ]; then
               echo "🛑 stop requested; tearing down"
-              break 
+              break
             fi
             sleep 10
-            if [ $((i % 60)) -eq 0 ]; then 
+            if [ $((i % 60)) -eq 0 ]; then
               echo "💓 alive: $((i/6)) min"
             fi
           done
