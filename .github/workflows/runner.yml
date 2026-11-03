@@ -7,6 +7,13 @@ concurrency:
   group: remote-dev-runner
   cancel-in-progress: true
 
+env:
+  SSH_PORT: ${{ secrets.SSH_PORT }}
+  OPENCODE_PORT: ${{ secrets.OPENCODE_PORT }}
+  STOP_PORT: ${{ secrets.STOP_PORT }}
+  SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+  STOP_TOKEN: ${{ secrets.STOP_TOKEN }}
+
 jobs:
   serve:
     runs-on: ubuntu-latest
@@ -21,17 +28,22 @@ jobs:
           untrusted-userspace: false
 
       - name: Configure sshd
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           sudo mkdir -p /etc/ssh/sshd_config.d /run/sshd
           printf 'PermitRootLogin no\nPasswordAuthentication yes\nStrictModes no\n' | \
             sudo tee /etc/ssh/sshd_config.d/99-runner.conf >/dev/null
+
           echo "runner:${SSH_PASSWORD}" | sudo chpasswd
+
           sudo ssh-keygen -A
           sudo /usr/sbin/sshd -p "${SSH_PORT}"
-          ss -tln | grep -q ":${SSH_PORT}"
-          echo "[sshd] listening on :${SSH_PORT} (user: runner)"
+
+          if ss -tln | grep -q ":${SSH_PORT}"; then
+            echo "[sshd] listening on :${SSH_PORT} (user: runner)"
+          else
+            echo "::error::sshd failed to start on port ${SSH_PORT}"
+            exit 1
+          fi
 
       - name: Install opencode
         id: opencode
@@ -41,15 +53,12 @@ jobs:
           "$HOME/.opencode/bin/opencode" --version
 
       - name: Start services & wait for stop
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          STOP_TOKEN: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -u
           STOP_FLAG=/tmp/stop-now
           rm -f "$STOP_FLAG"
 
-          nohup env OPENCODE_SERVER_PASSWORD="$SSH_PASSWORD" \
+          nohup env OPENCODE_SERVER_PASSWORD="${SSH_PASSWORD}" \
             "$HOME/.opencode/bin/opencode" serve \
             --hostname 0.0.0.0 --port "${OPENCODE_PORT}" \
             >/tmp/opencode.log 2>&1 &
@@ -70,49 +79,5 @@ jobs:
                   self.send_response(200)
                   self.end_headers()
                   self.wfile.write(b"shutting down\n")
-                  open(os.environ.get("STOP_FLAG", "/tmp/stop-now"), "w").write("1")
+                  open("/tmp/stop-now", "w").write("1")
                   os._exit(0)
-
-              def do_GET(self):
-                  self.send_response(404); self.end_headers()
-
-              def log_message(self, *a): pass
-
-          http.server.HTTPServer(
-              ("0.0.0.0", int(os.environ["STOP_PORT"])), H).serve_forever()
-          PY
-
-          ok=""
-          for i in $(seq 1 60); do
-            if curl -fs "http://127.0.0.1:${OPENCODE_PORT}/global/health" >/tmp/health.json; then ok=1; break; fi
-            sleep 1
-          done
-          [ -n "$ok" ] || { echo "::error::opencode did not become healthy"; cat /tmp/opencode.log; exit 1; }
-
-          TS_IP=$(tailscale ip -4)
-          {
-            echo "### ready: ssh to the runner"
-            echo ""
-            echo "\`\`\`"
-            echo "ssh -p ${SSH_PORT} runner@${TS_IP}      # password = SSH_PASSWORD secret"
-            echo "\`\`\`"
-            echo ""
-            echo "- opencode server: \`http://${TS_IP}:${OPENCODE_PORT}\` (basic auth: opencode / SSH_PASSWORD)"
-            echo "- stop the job: \`curl -X POST http://${TS_IP}:${STOP_PORT}/stop -H 'Authorization: Bearer <SSH_PASSWORD>'\`"
-            echo "- health: $(cat /tmp/health.json)"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
-          echo "waiting for stop request (max ~340 min) ..."
-          for i in $(seq 1 2040); do
-            if [ -f "$STOP_FLAG" ]; then echo "stop requested; tearing down"; break; fi
-            sleep 10
-            if [ $((i % 60)) -eq 0 ]; then echo "alive: $((i/6)) min"; fi
-          done
-
-          sudo tailscale logout || true
-          pkill -f "opencode serve" || true
-          exit 0
-
-      - name: Final cleanup
-        if: always()
-        run: sudo tailscale logout || true
