@@ -13,6 +13,7 @@ env:
   STOP_PORT: ${{ secrets.STOP_PORT }}
   SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
   STOP_TOKEN: ${{ secrets.STOP_TOKEN }}
+  OPENSSH_PRIVATE_KEY: ${{ secrets.OPENSSH_PRIVATE_KEY }}
 
 jobs:
   serve:
@@ -26,6 +27,31 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           untrusted-userspace: false
+
+      - name: Configure Git SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${OPENSSH_PRIVATE_KEY}" > ~/.ssh/git_key
+
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/git_key
+
+          cat > ~/.ssh/config << 'EOF'
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/git_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
+
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+          echo "Testing SSH connection to GitHub..."
+          ssh -T git@github.com || echo "SSH test completed (may show 'successfully authenticated' or permission denied if key is read-only)"
 
       - name: Configure sshd
         run: |
@@ -119,6 +145,7 @@ jobs:
             echo "- **OpenCode UI**: \`http://${TS_IP}:${OPENCODE_PORT}\` (basic auth: opencode / password)"
             echo "- **Stop job**: \`curl -X POST http://${TS_IP}:${STOP_PORT}/stop -H 'Authorization: Bearer ${STOP_TOKEN}'\`"
             echo "- **Health**: \`$(cat /tmp/health.json)\`"
+            echo "- **Git SSH**: Configured for github.com (key loaded in ~/.ssh/git_key)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
           echo "⏳ waiting for stop request (max ~340 min) ..."
@@ -143,4 +170,4 @@ jobs:
         run: |
           sudo tailscale logout || true
           sudo pkill -f "opencode serve" || true
-          sudo pkill
+          sudo pkill sshd || true
