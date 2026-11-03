@@ -58,7 +58,7 @@ jobs:
       - name: Configure sshd
         run: |
           sudo mkdir -p /etc/ssh/sshd_config.d /run/sshd
-          printf 'PermitRootLogin no\nPasswordAuthentication yes\nStrictModes no\n' | \
+          printf 'PermitRootLogin no\nPasswordAuthentication yes\n' | \
             sudo tee /etc/ssh/sshd_config.d/99-runner.conf >/dev/null
 
           echo "runner:${SSH_PASSWORD}" | sudo chpasswd
