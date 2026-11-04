@@ -1,0 +1,3 @@
+[submodule "plugins/opencode-remote-server"]
+	path = plugins/opencode-remote-server
+	url = git@gpeace.github.com:greenpeace016/opencode-remote-server.git
