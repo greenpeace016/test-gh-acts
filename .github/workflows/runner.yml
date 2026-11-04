@@ -1,7 +1,14 @@
 name: remote-dev-runner
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: "Hostname ноды в Tailscale (по умолчанию my-temp-runner)"
+        required: false
+        type: string
+        default: "my-temp-runner"
+  pull_request: {}
 
 concurrency:
   group: remote-dev-runner
@@ -26,7 +33,7 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: my-temp-runner
+          hostname: ${{ inputs.hostname || 'my-temp-runner' }}
           untrusted-userspace: false
           args: --advertise-exit-node
           version: latest
