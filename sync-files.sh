@@ -7,7 +7,7 @@ REPO="${REPO:-$(git remote get-url origin)}"
 
 br=$(git branch --show-current)
 
-git stash && git stash apply
+git stash && git stash apply || true
 
 git branch -f sync && \
   git checkout sync && \
