@@ -108,6 +108,26 @@ jobs:
             echo "[cache] no home snapshot found - keeping the fresh baseline"
           fi
 
+      - name: Restore docker state cache (archive)
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/.node-docker.tzst
+          key: node-docker-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: node-docker-v1-
+
+      - name: Unpack docker cache (stop daemon, restore, start)
+        run: |
+          if [ -f /home/runner/.node-docker.tzst ]; then
+            sudo systemctl stop docker docker.socket || true
+            sudo rm -rf /var/lib/docker
+            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst -C /var/lib --same-owner --numeric-owner -p
+            rm -f /home/runner/.node-docker.tzst
+            sudo systemctl start docker
+            echo "[cache] docker state unpacked"
+          else
+            echo "[cache] no docker snapshot found - keeping the fresh daemon"
+          fi
+
       - name: Start services & wait for stop
         run: |
           set -u
@@ -194,6 +214,26 @@ jobs:
           sudo pkill sshd || true
           exit 0
 
+      - name: Pack docker state (sudo)
+        # Docker volumes/bind-mounts and images live in /var/lib/docker (root-owned) - NOT under
+        # /home/runner, so they never reach the home snapshot. Tar'ing with sudo stops the daemon
+        # first (consistent snapshot), and preserves ownership without chowning live files.
+        if: always()
+        run: |
+          sudo systemctl stop docker docker.socket || true
+          sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-docker.tzst \
+            --exclude=.node-docker.tzst -C /var/lib --numeric-owner -p docker/ \
+            2>/tmp/pack-docker.log || { cat /tmp/pack-docker.log; exit 1; }
+          sudo chown runner:runner /home/runner/.node-docker.tzst
+          ls -lh /home/runner/.node-docker.tzst
+
+      - name: Save docker cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner/.node-docker.tzst
+          key: node-docker-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Pack home cache (sudo; keeps ownership and modes)
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
         # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
@@ -203,7 +243,7 @@ jobs:
         if: always()
         run: |
           sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-home.tzst \
-            --exclude=.node-home.tzst -C /home/runner --numeric-owner -p . \
+            --exclude=.node-home.tzst --exclude=.node-docker.tzst -C /home/runner --numeric-owner -p . \
             2>/tmp/pack-home.log || { cat /tmp/pack-home.log; exit 1; }
           sudo chown runner:runner /home/runner/.node-home.tzst
           ls -lh /home/runner/.node-home.tzst
