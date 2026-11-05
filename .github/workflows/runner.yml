@@ -13,6 +13,11 @@ concurrency:
   group: remote-dev-runner
   cancel-in-progress: true
 
+permissions:
+  # GITHUB_TOKEN needs actions:write for the cache-prune step (DELETE /actions/caches/{id})
+  actions: write
+  contents: read
+
 env:
   SSH_PORT: ${{ secrets.SSH_PORT }}
   OPENCODE_PORT: ${{ secrets.OPENCODE_PORT }}
@@ -25,6 +30,9 @@ jobs:
   serve:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      # single-slot cache keys are namespaced by the node hostname
+      CACHED_NODE_HOST: ${{ inputs.hostname || 'my-temp-runner' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -95,8 +103,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.node-home.tzst
-          key: node-home-v2-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: node-home-v2-
+          key: node-home-v3-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+          restore-keys: node-home-v3-${{ env.CACHED_NODE_HOST }}-
 
       - name: Unpack home cache (sudo, restoring ownership and modes)
         run: |
@@ -112,8 +121,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.node-docker.tzst
-          key: node-docker-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: node-docker-v1-
+          key: node-docker-v1-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: node-docker-v1-${{ env.CACHED_NODE_HOST }}-
 
       - name: Unpack docker cache (stop daemon, restore, start)
         run: |
@@ -232,7 +241,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.node-docker.tzst
-          key: node-docker-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: node-docker-v1-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Pack home cache (sudo; keeps ownership and modes)
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
@@ -253,7 +262,24 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.node-home.tzst
-          key: node-home-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: node-home-v3-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prune old node caches (single slot per prefix+hostname)
+        # Keys are immutable in the Actions cache; "overwrite" is achieved by saving the current
+        # snapshot under a fresh key and deleting every older one for the same prefix+hostname.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for prefix in "node-home-v3-${CACHED_NODE_HOST}-" "node-docker-v1-${CACHED_NODE_HOST}-"; do
+            gh api "repos/${GH_REPO}/actions/caches?per_page=100" --paginate \
+              --jq ".actions_caches | map(select(.key | startswith(\"$prefix\"))) | sort_by(.created_at) | reverse | .[1:][] | .id" \
+              | while read -r id; do
+                  gh api -X DELETE "repos/${GH_REPO}/actions/caches/$id" && echo "[prune] deleted cache id=$id prefix=$prefix"
+                done
+          done
+          echo "[prune] done - one node-home + one node-docker slot per hostname remain"
 
       - name: Final cleanup
         if: always()
