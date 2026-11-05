@@ -127,9 +127,14 @@ jobs:
       - name: Unpack docker cache (stop daemon, restore, start)
         run: |
           if [ -f /home/runner/.node-docker.tzst ]; then
+            NEWDR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+            NEWDR="${NEWDR:-/var/lib/docker}"
+            echo "[docker] unpacking to data-root: $NEWDR"
             sudo systemctl stop docker docker.socket || true
-            sudo rm -rf /var/lib/docker
-            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst -C /var/lib --same-owner --numeric-owner -p
+            sudo rm -rf "$NEWDR"
+            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst \
+              --transform="s,^docker-root,$(basename "$NEWDR")," \
+              -C "$(dirname "$NEWDR")" --same-owner --numeric-owner -p
             rm -f /home/runner/.node-docker.tzst
             sudo systemctl start docker
             echo "[cache] docker state unpacked"
@@ -224,20 +229,31 @@ jobs:
           exit 0
 
       - name: Pack docker state (sudo)
-        # Docker volumes/bind-mounts and images live in /var/lib/docker (root-owned) - NOT under
-        # /home/runner, so they never reach the home snapshot. Tar'ing with sudo stops the daemon
-        # first (consistent snapshot), and preserves ownership without chowning live files.
+        # Docker images/volumes/build cache live in the daemon's data-root, which is NOT always
+        # /var/lib/docker (GH hosted images may relocate it). Resolve it dynamically, stop the daemon
+        # first (consistent snapshot), archive under a stable in-archive name "docker-root" so a
+        # differing data-root on the next boot can be remapped on unpack. Root reads preserve
+        # ownership/modes - no chown of live data.
         if: always()
+        id: pack_docker
+        env:
+          PACK_LOG: /tmp/pack-docker.log
         run: |
+          DR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+          DR="${DR:-/var/lib/docker}"
+          echo "[docker] data-root: $DR"
           sudo systemctl stop docker docker.socket || true
           sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-docker.tzst \
-            --exclude=.node-docker.tzst -C /var/lib --numeric-owner -p docker/ \
-            2>/tmp/pack-docker.log || { cat /tmp/pack-docker.log; exit 1; }
+            --exclude=.node-docker.tzst --transform="s,^$(basename "$DR"),docker-root," \
+            -C "$(dirname "$DR")" --numeric-owner -p "$(basename "$DR")" \
+            2>"$PACK_LOG" || rc=$?
+          rc=${rc:-0}
+          if [ $rc -ne 0 ]; then cat "$PACK_LOG"; sudo rm -f /home/runner/.node-docker.tzst; exit 1; fi
           sudo chown runner:runner /home/runner/.node-docker.tzst
           ls -lh /home/runner/.node-docker.tzst
 
       - name: Save docker cache
-        if: always()
+        if: always() && steps.pack_docker.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.node-docker.tzst
@@ -247,18 +263,30 @@ jobs:
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
         # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
         # within the runner grace period, and may not finish.
-        # sudo tar reads root-owned docker bind-mount leftovers and stores owner/mode/timestamps in
-        # the archive; unpack step restores them as-is -- NO chown of live files.
+        # sudo tar reads root-owned leftovers and stores owner/mode/timestamps in the archive -- NO chown
+        # of live files. "file changed as we read it" (mutable stray files) is tolerated; any other tar
+        # failure aborts AND removes partial archive so the save step cannot publish garbage.
         if: always()
+        id: pack_home
+        env:
+          PACK_LOG: /tmp/pack-home.log
         run: |
+          rc=0
           sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-home.tzst \
             --exclude=.node-home.tzst --exclude=.node-docker.tzst -C /home/runner --numeric-owner -p . \
-            2>/tmp/pack-home.log || { cat /tmp/pack-home.log; exit 1; }
+            2>"$PACK_LOG" || rc=$?
+          if [ $rc -ne 0 ]; then
+            if [ -n "$(sudo grep -v "file changed as we read it" "$PACK_LOG" | tr -d '[:space:]"')" ]; then
+              sudo cat "$PACK_LOG"; sudo rm -f /home/runner/.node-home.tzst; exit 1
+            fi
+            echo "[pack] tolerated mutable-file warnings (rc=$rc):"
+            sudo grep "file changed as we read it" "$PACK_LOG" || true
+          fi
           sudo chown runner:runner /home/runner/.node-home.tzst
           ls -lh /home/runner/.node-home.tzst
 
       - name: Save home cache (after stop)
-        if: always()
+        if: always() && steps.pack_home.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.node-home.tzst
