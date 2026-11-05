@@ -1,7 +1,13 @@
 name: remote-dev-runner
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: "Node hostname in Tailscale (default my-temp-runner)"
+        required: false
+        type: string
+        default: "my-temp-runner"
 
 concurrency:
   group: remote-dev-runner
@@ -26,7 +32,7 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: my-temp-runner
+          hostname: ${{ inputs.hostname || 'my-temp-runner' }}
           untrusted-userspace: false
           args: --advertise-exit-node
           version: latest
@@ -80,6 +86,16 @@ jobs:
           curl -fsSL https://opencode.ai/v2/install | bash
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
           "$HOME/.opencode/bin/opencode" --version
+
+      - name: Restore home cache (before entrypoint)
+        # Restored AFTER all apps are installed (tailscale, sshd, opencode) and BEFORE the entrypoint step:
+        # the whole user home /home/runner is restored. Key never matches directly (each run saves under
+        # a fresh run_id/attempt key); restore-keys picks the most recent finished run's snapshot.
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner
+          key: node-home-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: node-home-v1-
 
       - name: Start services & wait for stop
         run: |
@@ -166,6 +182,16 @@ jobs:
           pkill -f "opencode serve" || true
           sudo pkill sshd || true
           exit 0
+
+      - name: Save home cache (after stop)
+        # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
+        # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
+        # within the runner grace period, and may not finish.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner
+          key: node-home-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Final cleanup
         if: always()
