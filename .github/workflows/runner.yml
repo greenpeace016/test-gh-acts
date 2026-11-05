@@ -183,13 +183,6 @@ jobs:
           sudo pkill sshd || true
           exit 0
 
-      - name: Make home cache save-able (docker bind-mounts leave root-owned files)
-        # Docker is a root daemon: volumes bind-mounted under ~/projects (mariadb-data, redis/data,
-        # logs...) are root-owned and unreadable by the 'runner' step user. Without this, the save
-        # tar below dies with "Permission denied" and the whole cache is silently skipped.
-        if: always()
-        run: sudo chown -R runner:runner /home/runner/projects 2>/dev/null || true
-
       - name: Save home cache (after stop)
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
         # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
