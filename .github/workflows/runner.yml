@@ -110,9 +110,13 @@ jobs:
       - name: Unpack home cache (sudo, restoring ownership and modes)
         run: |
           if [ -f /home/runner/.node-home.tzst ]; then
-            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-home.tzst -C /home/runner --same-owner --numeric-owner -p
-            rm -f /home/runner/.node-home.tzst
-            echo "[cache] home unpacked (owners/modes preserved)"
+            if sudo tar --use-compress-program=unzstd -xf /home/runner/.node-home.tzst -C /home/runner --same-owner --numeric-owner -p; then
+              rm -f /home/runner/.node-home.tzst
+              echo "[cache] home unpacked (owners/modes preserved)"
+            else
+              echo "::warning::home archive corrupt - falling back to the fresh baseline"
+              sudo rm -f /home/runner/.node-home.tzst
+            fi
           else
             echo "[cache] no home snapshot found - keeping the fresh baseline"
           fi
@@ -132,12 +136,16 @@ jobs:
             echo "[docker] unpacking to data-root: $NEWDR"
             sudo systemctl stop docker docker.socket || true
             sudo rm -rf "$NEWDR"
-            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst \
-              --transform="s,^docker-root,$(basename "$NEWDR")," \
-              -C "$(dirname "$NEWDR")" --same-owner --numeric-owner -p
+            if sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst \
+                 --transform="s,^docker-root,$(basename "$NEWDR")," \
+                 -C "$(dirname "$NEWDR")" --same-owner --numeric-owner -p; then
+              echo "[cache] docker state unpacked"
+            else
+              echo "::warning::docker archive corrupt - wiping leftovers, keeping a fresh daemon"
+              sudo rm -rf "$NEWDR"
+            fi
             rm -f /home/runner/.node-docker.tzst
             sudo systemctl start docker
-            echo "[cache] docker state unpacked"
           else
             echo "[cache] no docker snapshot found - keeping the fresh daemon"
           fi
