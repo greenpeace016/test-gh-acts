@@ -133,19 +133,21 @@ jobs:
           if [ -f /home/runner/.node-docker.tzst ]; then
             NEWDR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
             NEWDR="${NEWDR:-/var/lib/docker}"
-            echo "[docker] unpacking to data-root: $NEWDR"
+            echo "[docker] unpacking to data-root: $NEWDR (and /var/lib/containerd)"
             sudo systemctl stop docker docker.socket || true
-            sudo rm -rf "$NEWDR"
+            sudo systemctl stop containerd || true
+            sudo rm -rf "$NEWDR" /var/lib/containerd
             if sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst \
-                 --transform="s,^docker-root,$(basename "$NEWDR")," \
-                 -C "$(dirname "$NEWDR")" --same-owner --numeric-owner -p; then
+                 --transform="s,^docker-root/,$(basename "$NEWDR")/," \
+                 --transform="s,^containerd-root/,containerd/," \
+                 -C /var/lib --same-owner --numeric-owner -p; then
               echo "[cache] docker state unpacked"
             else
               echo "::warning::docker archive corrupt - wiping leftovers, keeping a fresh daemon"
-              sudo rm -rf "$NEWDR"
+              sudo rm -rf "$NEWDR" /var/lib/containerd
             fi
             rm -f /home/runner/.node-docker.tzst
-            sudo systemctl start docker
+            sudo systemctl start containerd docker || sudo systemctl start docker
           else
             echo "[cache] no docker snapshot found - keeping the fresh daemon"
           fi
@@ -237,11 +239,12 @@ jobs:
           exit 0
 
       - name: Pack docker state (sudo)
-        # Docker images/volumes/build cache live in the daemon's data-root, which is NOT always
-        # /var/lib/docker (GH hosted images may relocate it). Resolve it dynamically, stop the daemon
-        # first (consistent snapshot), archive under a stable in-archive name "docker-root" so a
-        # differing data-root on the next boot can be remapped on unpack. Root reads preserve
-        # ownership/modes - no chown of live data.
+        # On GH runners Docker uses a containerd snapshotter (io.containerd.snapshotter.v1), so the
+        # bulk of image/volume content lives in /var/lib/containerd, while /var/lib/docker holds only
+        # config + volumes metadata. Resolve the docker data-root dynamically (it is NOT always
+        # /var/lib/docker), stop docker + containerd (consistent snapshot), archive BOTH under stable
+        # in-archive names docker-root/ and containerd-root/; unpack remaps them back. Root reads
+        # preserve ownership/modes - no chown of live data.
         if: always()
         id: pack_docker
         env:
@@ -249,16 +252,19 @@ jobs:
         run: |
           DR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
           DR="${DR:-/var/lib/docker}"
-          echo "[docker] data-root: $DR"
+          echo "[docker] data-root: $DR (with /var/lib/containerd)"
           sudo systemctl stop docker docker.socket || true
+          sudo systemctl stop containerd || true
           sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-docker.tzst \
-            --exclude=.node-docker.tzst --transform="s,^$(basename "$DR"),docker-root," \
-            -C "$(dirname "$DR")" --numeric-owner -p "$(basename "$DR")" \
+            --transform="s,^$(basename "$DR")/,docker-root/," \
+            --transform="s,^containerd/,containerd-root/," \
+            -C /var/lib --numeric-owner -p "$(basename "$DR")/" containerd/ \
             2>"$PACK_LOG" || rc=$?
           rc=${rc:-0}
           if [ $rc -ne 0 ]; then cat "$PACK_LOG"; sudo rm -f /home/runner/.node-docker.tzst; exit 1; fi
           sudo chown runner:runner /home/runner/.node-docker.tzst
           ls -lh /home/runner/.node-docker.tzst
+          sudo systemctl start containerd docker
 
       - name: Save docker cache
         if: always() && steps.pack_docker.outcome == 'success'
