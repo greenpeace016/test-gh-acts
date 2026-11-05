@@ -87,15 +87,26 @@ jobs:
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
           "$HOME/.opencode/bin/opencode" --version
 
-      - name: Restore home cache (before entrypoint)
-        # Restored AFTER all apps are installed (tailscale, sshd, opencode) and BEFORE the entrypoint step:
-        # the whole user home /home/runner is restored. Key never matches directly (each run saves under
-        # a fresh run_id/attempt key); restore-keys picks the most recent finished run's snapshot.
+      - name: Restore home cache (archive, before entrypoint)
+        # Restored AFTER all apps are installed (tailscale, sshd, opencode) and BEFORE the entrypoint step.
+        # v2: a single sudo-made tarball, not raw files - root readers are preserved (docker bind-mounts
+        # leave root-owned files the 'runner' step user cannot read). Key never matches directly; restore-keys
+        # picks the most recent finished run's snapshot.
         uses: actions/cache/restore@v4
         with:
-          path: /home/runner
-          key: node-home-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: node-home-v1-
+          path: /home/runner/.node-home.tzst
+          key: node-home-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: node-home-v2-
+
+      - name: Unpack home cache (sudo, restoring ownership and modes)
+        run: |
+          if [ -f /home/runner/.node-home.tzst ]; then
+            sudo tar --use-compress-program=unzstd -xf /home/runner/.node-home.tzst -C /home/runner --same-owner --numeric-owner -p
+            rm -f /home/runner/.node-home.tzst
+            echo "[cache] home unpacked (owners/modes preserved)"
+          else
+            echo "[cache] no home snapshot found - keeping the fresh baseline"
+          fi
 
       - name: Start services & wait for stop
         run: |
@@ -183,15 +194,26 @@ jobs:
           sudo pkill sshd || true
           exit 0
 
-      - name: Save home cache (after stop)
+      - name: Pack home cache (sudo; keeps ownership and modes)
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
         # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
         # within the runner grace period, and may not finish.
+        # sudo tar reads root-owned docker bind-mount leftovers and stores owner/mode/timestamps in
+        # the archive; unpack step restores them as-is -- NO chown of live files.
+        if: always()
+        run: |
+          sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-home.tzst \
+            --exclude=.node-home.tzst -C /home/runner --numeric-owner -p . \
+            2>/tmp/pack-home.log || { cat /tmp/pack-home.log; exit 1; }
+          sudo chown runner:runner /home/runner/.node-home.tzst
+          ls -lh /home/runner/.node-home.tzst
+
+      - name: Save home cache (after stop)
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: /home/runner
-          key: node-home-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /home/runner/.node-home.tzst
+          key: node-home-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Final cleanup
         if: always()
