@@ -121,37 +121,6 @@ jobs:
             echo "[cache] no home snapshot found - keeping the fresh baseline"
           fi
 
-      - name: Restore docker state cache (archive)
-        uses: actions/cache/restore@v4
-        with:
-          path: /home/runner/.node-docker.tzst
-          key: node-docker-v1-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: node-docker-v1-${{ env.CACHED_NODE_HOST }}-
-
-      - name: Unpack docker cache (stop daemon, restore, start)
-        run: |
-          if [ -f /home/runner/.node-docker.tzst ]; then
-            NEWDR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
-            NEWDR="${NEWDR:-/var/lib/docker}"
-            echo "[docker] unpacking to data-root: $NEWDR (and /var/lib/containerd)"
-            sudo systemctl stop docker docker.socket || true
-            sudo systemctl stop containerd || true
-            sudo rm -rf "$NEWDR" /var/lib/containerd
-            if sudo tar --use-compress-program=unzstd -xf /home/runner/.node-docker.tzst \
-                 --transform="s,^docker-root/,$(basename "$NEWDR")/," \
-                 --transform="s,^containerd-root/,containerd/," \
-                 -C /var/lib --same-owner --numeric-owner -p; then
-              echo "[cache] docker state unpacked"
-            else
-              echo "::warning::docker archive corrupt - wiping leftovers, keeping a fresh daemon"
-              sudo rm -rf "$NEWDR" /var/lib/containerd
-            fi
-            rm -f /home/runner/.node-docker.tzst
-            sudo systemctl start containerd docker || sudo systemctl start docker
-          else
-            echo "[cache] no docker snapshot found - keeping the fresh daemon"
-          fi
-
       - name: Start services & wait for stop
         run: |
           set -u
@@ -238,41 +207,6 @@ jobs:
           sudo pkill sshd || true
           exit 0
 
-      - name: Pack docker state (sudo)
-        # On GH runners Docker uses a containerd snapshotter (io.containerd.snapshotter.v1), so the
-        # bulk of image/volume content lives in /var/lib/containerd, while /var/lib/docker holds only
-        # config + volumes metadata. Resolve the docker data-root dynamically (it is NOT always
-        # /var/lib/docker), stop docker + containerd (consistent snapshot), archive BOTH under stable
-        # in-archive names docker-root/ and containerd-root/; unpack remaps them back. Root reads
-        # preserve ownership/modes - no chown of live data.
-        if: always()
-        id: pack_docker
-        env:
-          PACK_LOG: /tmp/pack-docker.log
-        run: |
-          DR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
-          DR="${DR:-/var/lib/docker}"
-          echo "[docker] data-root: $DR (with /var/lib/containerd)"
-          sudo systemctl stop docker docker.socket || true
-          sudo systemctl stop containerd || true
-          sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-docker.tzst \
-            --transform="s,^$(basename "$DR")/,docker-root/," \
-            --transform="s,^containerd/,containerd-root/," \
-            -C /var/lib --numeric-owner -p "$(basename "$DR")/" containerd/ \
-            2>"$PACK_LOG" || rc=$?
-          rc=${rc:-0}
-          if [ $rc -ne 0 ]; then cat "$PACK_LOG"; sudo rm -f /home/runner/.node-docker.tzst; exit 1; fi
-          sudo chown runner:runner /home/runner/.node-docker.tzst
-          ls -lh /home/runner/.node-docker.tzst
-          sudo systemctl start containerd docker
-
-      - name: Save docker cache
-        if: always() && steps.pack_docker.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: /home/runner/.node-docker.tzst
-          key: node-docker-v1-${{ env.CACHED_NODE_HOST }}-${{ github.run_id }}-${{ github.run_attempt }}
-
       - name: Pack home cache (sudo; keeps ownership and modes)
         # Runs after the serve step finishes. Reached on a GRACEFUL stop (POST /stop) while the VM is
         # still up - this is why the HTTP stop endpoint exists; on gh cancel it still tries (always()),
@@ -287,7 +221,7 @@ jobs:
         run: |
           rc=0
           sudo tar --use-compress-program=zstdmt -cf /home/runner/.node-home.tzst \
-            --exclude=.node-home.tzst --exclude=.node-docker.tzst -C /home/runner --numeric-owner -p . \
+            --exclude=.node-home.tzst -C /home/runner --numeric-owner -p . \
             2>"$PACK_LOG" || rc=$?
           if [ $rc -ne 0 ]; then
             if [ -n "$(sudo grep -v "file changed as we read it" "$PACK_LOG" | tr -d '[:space:]"')" ]; then
@@ -314,14 +248,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for prefix in "node-home-v3-${CACHED_NODE_HOST}-" "node-docker-v1-${CACHED_NODE_HOST}-"; do
+          for prefix in "node-home-v3-${CACHED_NODE_HOST}-"; do
             gh api "repos/${GH_REPO}/actions/caches?per_page=100" --paginate \
               --jq ".actions_caches | map(select(.key | startswith(\"$prefix\"))) | sort_by(.created_at) | reverse | .[1:][] | .id" \
               | while read -r id; do
                   gh api -X DELETE "repos/${GH_REPO}/actions/caches/$id" && echo "[prune] deleted cache id=$id prefix=$prefix"
                 done
           done
-          echo "[prune] done - one node-home + one node-docker slot per hostname remain"
+          echo "[prune] done - one node-home slot per hostname remains"
 
       - name: Final cleanup
         if: always()
